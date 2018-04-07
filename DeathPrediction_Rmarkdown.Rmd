@@ -1,0 +1,166 @@
+---
+title: "Death Prediction"
+author: "cKayce"
+date: "20 September 2017"
+output: html_document
+---
+#R Markdown
+Client's background: Client is a volunteer organisation that sends its volunteers to visit seniors. As the client has a limited pool of volunteers and a sizeable group of seniors passes on monthly, it will be crucial to visit seniors who have limited life expectancy first.
+
+Use case: Predict the seniors who are on the verge of passing on  via RandomForest so that the client can prioritise which group of seniors to meet first
+
+
+```{r Create sample data, include=FALSE}
+#retrieve dummy sample data ====
+source(file = "C:/Users/cKayce/Documents/R/projects/example1/SourceScript/createSampleData.R")
+
+
+```
+
+
+## Prepare the data
+Data frame, consisting of categorial variables (such as "exercise" , "smoke") has been randomly generated.
+The data is dummified before running the data frame in RandomForest.
+```{r Dummfy data}
+#prepare the datasets for analysis ====
+order <- c("id", "deathstatus", "exercise", "smoke", "race", "gender", "m.status", "illnesses", 
+   "incomegroup", "n.child", "agegroup")
+
+sampledata <- sampledata[,order]
+head(sampledata)
+
+#dummfy the data into 1/0 factors =====
+library(caret)
+dmy <- dummyVars("~." , data=sampledata[-2])
+sampledata2 <- data.frame(predict(dmy , newdata = sampledata[-2]))
+library(dplyr)
+deathdf <- select(sampledata , id , deathstatus)
+sampledata3 <- merge(deathdf , sampledata2 , by = "id" , all = T)
+sampledata3 <- na.omit(sampledata3)
+cols <- c("deathstatus" , "exercise.no", "exercise.yes", "smoke.no", 
+          "smoke.yes", "race.chinese", "race.indian", "race.malay", "race.others", 
+          "gender.female", "gender.male", "m.status.divorced", "m.status.married", 
+          "m.status.single", "m.status.widowed", "illnesses.cancer", "illnesses.heartdisease", 
+          "illnesses.others", "illnesses.stroke", "incomegrouphigh", "incomegrouplow", 
+          "incomegroupmiddle", "n.child0.child", "n.child1.2.children", 
+          "n.child3.or.more.children", "agegroup60.64", "agegroup65.69", 
+          "agegroup70.74", "agegroup75.79", "agegroup80.84", "agegroup85.89", 
+          "agegroup90...above")
+sampledata3[,cols] <- lapply(sampledata3[,cols],as.factor)
+
+#split the data into training and testing data sets =====
+set.seed(10000)
+sample.ind <- sample(2, nrow(sampledata3) , replace = T , prob = c(0.7 , 0.3))
+trainingset <- sampledata3[sample.ind==1,] #training
+trainingset2 <- select(trainingset , -deathstatus)
+testingset <- sampledata3[sample.ind==2,] #testing
+
+```
+
+## Run RandomForest
+For any initial run of the RandomForest, the ntree and mtry (total number of variables/3) values are set as 500 and 31 (i.e. standard values) respectively
+```{r RandomForest}
+
+#RandomForest =====
+VarNames <- names(trainingset)
+#exclude the id and response variable from model ====
+VarNames <- VarNames[!VarNames %in% c("id" , "deathstatus")]
+#Add "+" sign to between independent variables ====
+VarNames1 <- paste(VarNames , collapse = "+")
+#Add response variable to derive the actual formula ====
+rf_form <- as.formula(paste("deathstatus", VarNames1 , sep = "~"))
+
+library(randomForest)
+rf <- randomForest(rf_form , 
+                   trainingset ,
+                   ntree = 500 ,
+                   mtry = 31 ,
+                   replace = T ,
+                   importance = T , 
+                   proximity = T)
+```
+
+
+## Generate OOB Error
+OOB error is a measure of the prediction error caused by RandomForest. 
+As RandomForest uses boot-strapping (or subsampling) for prediction, the OOB is the mean prediction error of the training data samples.
+OOB error is observed to be lower when less than 100 trees are used for prediction.
+```{r OOB Error}
+
+#Plot OOB reate vs No. of Trees graph ====
+layout(matrix(c(1,2),nrow = 1),
+       widths = c(4,1))
+par(mar=c(5,4,4,0))
+plot(rf, main = "OOB Error")
+par(mar=c(5,0,4,2))
+plot(c(0,1),type="n",axes = F, xlab = "" , ylab = "")
+legend("top", colnames(rf$err.rate),col = 1:4,cex = 0.8, fill = 1:4)
+
+print(rf)
+```
+
+## Inspect Variable Importance
+Variable importance measures the top 10 variables that influence the prediction accuracy if it is taken out of the model or the top 10 variables that
+have pure nodes at each split (i.e. mean decrease gini).
+The model shows that race: Indian, incomegroup: Low, illnesses: Cancer are key factors in determining if the senior is alive or not.
+This then shows the need for the client to focus on engaging this group of seniors.
+```{r Variable Importance}
+
+#Variable Importance ====
+varImpPlot(rf , 
+           sort = T , 
+           n.var = 10 ,
+           main = "Top 10 - Variable Importance")
+
+#Variable Importance Table ====
+var.imp <- data.frame(importance(rf,
+                                 type=2))
+
+var.imp$Variables <- row.names(var.imp)
+var.imp[order(var.imp$MeanDecreaseGini,decreasing = T),]
+```
+
+## Inspect Model Accuracy
+It is normal that the model shows higher accuracry in training set than testing set since the training set is used to form the model.
+Although the model seems to generate a respectable score of 86% accuracy in training set, the testing set accuracy is considered low (i.e. 50%).
+```{r Model Accuracy}
+
+#Predicting response variable
+trainingset$predictedresponse <- predict(rf ,trainingset)
+
+#check accuracy of model training set =====
+library(e1071)
+confusionMatrix(data=trainingset$predictedresponse,
+                reference=trainingset$deathstatus)
+
+
+#check model accuracy testing set =====
+#Predicting response variable
+testingset$predictedresponse <- predict(rf ,testingset)
+
+#create Confusion Matrix
+confusionMatrix(data=testingset$predictedresponse,
+                reference=testingset$deathstatus)
+```
+
+
+## Estimate the number of seniors to be visited first
+These alive seniors who have the following traits - Indian, Low Income Group, Cancer - will be visited first.
+The different groups' sizing has been identified and client should use it for prioity visit.
+```{r Visualisation}
+
+ggplot(data=sampledata, aes(x=deathstatus , fill=deathstatus)) +
+  geom_bar(stat="count") + scale_fill_brewer(palette="Spectral")
+
+sampledataviz <- sampledata[sampledata$deathstatus == "alive",] #filtered alive records
+
+ggplot(data=sampledataviz, aes(x=race)) +
+  geom_bar(colour= "black" , fill = "#DD8888" , stat="count")
+
+ggplot(data=sampledataviz, aes(x=incomegroup)) +
+  geom_bar(colour= "black" , fill = "#56B4E9" , stat="count")
+
+ggplot(data=sampledataviz, aes(x=illnesses)) +
+  geom_bar(colour= "black" , fill = "#009E73" , stat="count")
+
+```
